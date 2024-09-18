@@ -1,0 +1,8 @@
+{
+	"BuildId": "33043543",
+	"Modules": 
+	{
+		"ExpressiveText": "UnrealEditor-ExpressiveText.dll",
+		"ExpressiveTextEditor": "UnrealEditor-ExpressiveTextEditor.dll"
+	}
+}

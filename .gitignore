@@ -50,7 +50,7 @@ Content/StarterContent/*
 
 # Binary Files
 Binaries/*
-Plugins/**/Binaries/*
+!Plugins/**/Binaries/**
 
 # Builds
 Build/*
