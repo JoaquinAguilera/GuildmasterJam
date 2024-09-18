@@ -1,0 +1,578 @@
+// Copyright 2022 Guganana. All Rights Reserved.
+#pragma once
+
+#include <CoreMinimal.h>
+#include <HttpModule.h>
+#include <Interfaces/IHttpRequest.h>
+#include <Interfaces/IHttpResponse.h>
+#include <Internationalization/TextFormatter.h>
+#include <JsonUtilities/Public/JsonObjectConverter.h>
+#include <Tickable.h>
+
+#include "Plugin.h"
+#include "Id.h"
+
+
+// CATEGORY
+class UnlogCategoryBase
+{
+private:
+    FName CategoryName;
+    ELogVerbosity::Type Verbosity;
+
+public:
+
+    UnlogCategoryBase(const FName& InName, ELogVerbosity::Type InVerbosity)
+        : CategoryName(InName)
+        , Verbosity(InVerbosity)
+    {}
+
+    const FName& GetName() const
+    {
+        return CategoryName;
+    }
+
+    ELogVerbosity::Type GetVerbosity() const
+    {
+        return Verbosity;
+    }
+};
+
+template<typename ActualType>
+class UnlogCategoryCRTP : public UnlogCategoryBase
+{
+public:
+    using UnlogCategoryBase::UnlogCategoryBase;
+
+    static ActualType& Static()
+    {
+        static ActualType Type = ActualType::Construct(); 
+        return Type; 
+    }
+
+    template<typename TSettings = UnlogSettings, typename Fmt, typename... ArgTypes>
+    static void Log(Fmt Format, ArgTypes... Args)
+    {
+        Unlogger::Get<TSettings>().UnlogImpl<ActualType>(Format, ELogVerbosity::Log, Args...);
+    }
+
+    template<typename TSettings = UnlogSettings, typename Fmt, typename... ArgTypes>
+    static void Warn(Fmt Format, ArgTypes... Args)
+    {
+        Unlogger::Get<TSettings>().UnlogImpl<ActualType>(Format, ELogVerbosity::Warning, Args...);
+    }
+    template<typename TSettings = UnlogSettings, typename Fmt, typename... ArgTypes>
+    static void Error(Fmt Format, ArgTypes... Args)
+    {
+        Unlogger::Get<TSettings>().UnlogImpl<ActualType>(Format, ELogVerbosity::Error, Args...);
+    }
+};
+
+
+#ifndef uncategory
+#define uncategory(CategoryName)  \
+class UC_##CategoryName : public UnlogCategoryCRTP<UC_##CategoryName> \
+{\
+public:\
+    using UnlogCategoryCRTP<UC_##CategoryName>::UnlogCategoryCRTP; \
+    static UC_##CategoryName Construct()\
+    {\
+        return UC_##CategoryName( TEXT( #CategoryName ), ELogVerbosity::Log );\
+    }\
+};
+#endif
+
+uncategory(General)
+
+//CONTEXT
+
+template <typename ActualType>
+class UnlogContextBase
+{
+private:
+    FName ContextName;
+    uint32 Counter;
+
+public:
+
+    UnlogContextBase(const FName& InName)
+        : ContextName(InName)
+        , Counter(0u)
+    {}
+
+    static ActualType& Static()
+    {
+        static ActualType Type = ActualType::Construct();
+        return Type;
+    }
+
+    const FName& GetName() const
+    {
+        return ContextName;
+    }
+
+    void IncrementCounter()
+    {
+        Counter++;
+    }
+
+    void DecrementCounter()
+    {
+        check(Counter > 0u);
+        Counter--;
+    }
+
+    bool IsActive() const
+    {
+        return Counter > 0u;
+    }
+};
+
+template <typename ActualType>
+class UnloggerScopedContext
+{
+private:
+    bool Value;
+public:
+    UnloggerScopedContext(bool InValue)
+        : Value(InValue)
+    {
+        if (Value)
+        {
+            ActualType::Static().IncrementCounter();
+        }
+    }
+
+    ~UnloggerScopedContext()
+    {
+        if (Value)
+        {
+            ActualType::Static().DecrementCounter();
+        }
+    }
+};
+
+template <typename TContext>
+class MakeContextNamespace
+{
+public:
+    template< typename Functor >
+    static void WhenActive(Functor Func)
+    {
+        if (TContext::Static().IsActive())
+        {
+            Func();
+        }
+    }
+};
+
+#define uncontext(ContextName) \
+class UCON_##ContextName : public UnlogContextBase<UCON_##ContextName> \
+{\
+public:\
+    using UnlogContextBase<UCON_##ContextName>::UnlogContextBase; \
+    static UCON_##ContextName Construct()\
+    {\
+        return UCON_##ContextName( TEXT( #ContextName ) );\
+    }\
+};\
+using ContextName = MakeContextNamespace<UCON_##ContextName>;
+
+#define scopedcontext(ContextName, ContextValue) \
+UnloggerScopedContext<UCON_##ContextName> ScopedContext_##ContextName( ContextValue );
+
+
+template< typename TContext, typename Functor >
+void WhenInContext(Functor Func)
+{
+    if (TContext::Static().IsActive())
+    {
+        Func();
+    }
+}
+// SINKS
+
+class UnlogSinkBase
+{
+public:
+    virtual ~UnlogSinkBase() {}
+    virtual void ProcessLog(const FName& Category, ELogVerbosity::Type Verbosity, const FString& Message) = 0;
+};
+
+struct FUnlogSettings
+{
+    template< typename TSink >
+    TSharedRef<TSink> AddSink()
+    {
+        auto Sink = TSharedRef<UnlogSinkBase>(MakeShareable( new TSink() ));
+        Sinks.Add(Sink);
+        return StaticCastSharedRef<TSink>(Sink);
+    }
+
+    TArray<TSharedRef<UnlogSinkBase>> Sinks;
+};
+
+
+class DefaultSettings
+{
+public:
+    static void PopulateSettings(FUnlogSettings& Settings)
+    {
+    }
+};
+
+
+//template< typename TUnlogSettings >
+//class SetUnlogSettings
+//{
+//public:
+//    SetUnlogSettings()
+//    {
+//        checkf(Counter > 0, TEXT("Cannot set Unlog settings more than once!") );
+//        Counter++;
+//        Unlogger::Get().ApplySettings<TUnlogSettings>();
+//    }
+//
+//private:
+//    static uint8 Counter;
+//    static SetUnlogSettings<TUnlogSettings> StaticInitializer;
+//};
+
+class Unlogger
+{
+private:
+    FUnlogSettings Settings;
+
+public:
+
+    template< typename TSettings >
+    static Unlogger& Get()
+    {
+        static Unlogger Logger = CreateLogger<TSettings>();
+        return Logger;
+    }
+
+    template< typename TSettings >
+    static Unlogger CreateLogger()
+    {
+        Unlogger Logger;
+        Logger.ApplySettings<TSettings>();
+        return Logger;
+    }
+
+    template< typename TSettings >
+    void ApplySettings()
+    {
+        TSettings::PopulateSettings(Settings);
+    }
+
+    TMap< FName, TMap< FName, ELogVerbosity::Type > >& GetVerbosityMap()
+    {
+        static TMap< FName, TMap< FName, ELogVerbosity::Type > > Verbosity;
+        return Verbosity;
+    }
+
+    TMap<FName, uint16>& GetContexts()
+    {
+        static TMap<FName, uint16> Contexts = TMap<FName, uint16>();
+        return Contexts;
+    }
+
+    template<typename... ArgTypes>
+    void UnlogPrivateImpl(const FString& Format, const UnlogCategoryBase& Category, ELogVerbosity::Type Verbosity, ArgTypes... Args)
+    {
+        static_assert(TAnd<TIsConstructible<FFormatArgumentValue, ArgTypes>...>::Value, "Invalid argument type passed to UnlogImpl");
+
+
+        const FName& CategoryName = Category.GetName();
+
+        FString Result = FTextFormatter::FormatStr(FTextFormat::FromString(Format), FFormatOrderedArguments({ Args... }), false, false);
+        if (TMap< FName, ELogVerbosity::Type >* CatToContexts = GetVerbosityMap().Find(CategoryName))
+        {
+            TMap<FName, uint16>& ActiveContextsMap = GetContexts();
+
+            for (auto Context : *CatToContexts)
+            {
+                if ( ActiveContextsMap.Find(Context.Key) )
+                {
+                    Verbosity = Context.Value;
+                }
+            }
+        }
+
+        if (Verbosity <= Category.GetVerbosity() && Verbosity != ELogVerbosity::NoLogging )
+        {
+            FMsg::Logf(nullptr, 0, CategoryName, Verbosity, TEXT("%s"), *Result);
+        
+            for ( auto& Sink : Settings.Sinks )
+            {
+                Sink->ProcessLog(CategoryName, Verbosity, Result);
+            }
+        }
+    }
+
+    template<typename... ArgTypes>
+    void UnlogImpl(const TCHAR* Fmt, const UnlogCategoryBase& Category, ELogVerbosity::Type InVerbosity, ArgTypes... Args)
+    {
+        UnlogPrivateImpl(FString(Fmt), Category, InVerbosity, Args...);
+    }
+
+    template<typename... ArgTypes>
+    void UnlogImpl(const char* Fmt, const UnlogCategoryBase& Category, ELogVerbosity::Type InVerbosity, ArgTypes... Args)
+    {
+        UnlogImpl(UTF8_TO_TCHAR(Fmt), Category, InVerbosity, Args...);
+    }
+
+    template<typename UnlogCategoryType, typename FMT, typename... ArgTypes>
+    void UnlogImpl(FMT Fmt, ELogVerbosity::Type InVerbosity, ArgTypes... Args)
+    {
+        UnlogImpl(Fmt, UnlogCategoryType::Static(), InVerbosity, Args...);
+    }
+
+};
+
+
+
+#ifndef unlog
+#ifndef DISABLE_UNLOGS
+#define unlog(CategoryName, Verbosity, Format, ...)  \
+{\
+    Unlogger::UnlogImpl<UC_##CategoryName>(TEXT(Format), ##__VA_ARGS__);\
+}
+#else
+#define unlog(CategoryName, Verbosity, Format, ...)  
+#endif
+#endif
+
+// NEEDS typename after every = for linux
+
+
+//template <typename UnlogCategoryType, typename TSettings = UnlogSettings>
+//class MakeUnlogger
+//{
+//public:
+//    template<typename Fmt, typename... ArgTypes>
+//    static void Log(Fmt Format, ArgTypes... Args)
+//    {
+//        Unlogger::Get<TSettings>().UnlogImpl<UnlogCategoryType>(Format, ELogVerbosity::Log, Args...);
+//    }
+//
+//    template<typename Fmt, typename... ArgTypes>
+//    static void Warn(Fmt Format, ArgTypes... Args)
+//    {
+//        Unlogger::Get<TSettings>().UnlogImpl<UnlogCategoryType>(Format, ELogVerbosity::Warning, Args...);
+//    }
+//
+//    template<typename Fmt, typename... ArgTypes>
+//    static void Error(Fmt Format, ArgTypes... Args)
+//    {
+//        Unlogger::Get<TSettings>().UnlogImpl<UnlogCategoryType>(Format, ELogVerbosity::Error, Args...);
+//    }
+//
+//};
+
+
+
+
+template<typename UnlogCategoryType = UnlogDefaultCategory, typename TSettings = UnlogSettings, typename Fmt, typename... ArgTypes>
+void Unlog(Fmt Format, ArgTypes... Args)
+{
+    Unlogger::Get<TSettings>().UnlogImpl<UnlogCategoryType>(Format, ELogVerbosity::Log, Args...);
+}
+
+template<typename UnlogCategoryType = UnlogSettings::DefaultCategory, typename TSettings = UnlogSettings, typename Fmt, typename... ArgTypes>
+void Unwarn(Fmt Format, ArgTypes... Args)
+{
+    Unlogger::Get<TSettings>().UnlogImpl<UnlogCategoryType>(Format, ELogVerbosity::Warning, Args...);
+}
+
+template<typename UnlogCategoryType = UnlogDefaultCategory, typename TSettings = UnlogSettings, typename Fmt, typename... ArgTypes>
+void Unerror(Fmt Format, ArgTypes... Args)
+{
+    Unlogger::Get().UnlogImpl<UnlogCategoryType>(Format, ELogVerbosity::Error, Args...);
+}
+
+class ExTextLogger
+{
+public:
+    static void Log(ELogVerbosity::Type Verbosity, const FString& Message)
+    {
+        //unlog(ExpressiveText, Error, "Hey {0} Joe", 123);
+
+        /*static Guganana::RemoteLog RemoteLogger;
+        RemoteLogger.Log(Verbosity, Message);*/
+
+        //if (auto* Debugger = AExpressiveTextDebugger::Get())
+        //{
+        //    Debugger->Log(Verbosity, Message);
+        //}
+    }
+};
+namespace Guganana 
+{
+    class RemoteLog : public FTickableGameObject
+    {
+    public:
+
+        RemoteLog()
+            : PendingLogEvents()
+            , TimeBetweenSendsInSeconds( 2.f )
+            , AccumulatedTime( 0.f )
+        {}
+
+        void SetTimeBetweenSends(float InTimeBetweenSendsInSeconds)
+        {
+            TimeBetweenSendsInSeconds = InTimeBetweenSendsInSeconds;
+        }
+        void Log(ELogVerbosity::Type Verbosity, const FString& Message)
+        {
+            PendingLogEvents.Emplace(Verbosity, Message);
+        }
+        virtual bool IsTickable() const 
+        { 
+            return PendingLogEvents.Num() > 0;
+        }
+ 
+        virtual bool IsTickableWhenPaused() const override
+        {
+            return true;
+        }
+
+        virtual bool IsTickableInEditor() const override
+        {
+            return true;
+        }
+
+        virtual TStatId GetStatId() const override
+        {
+            RETURN_QUICK_DECLARE_CYCLE_STAT(RemoteLog, STATGROUP_Tickables);
+        }
+
+        virtual void Tick(float DeltaTime) override
+        {
+            AccumulatedTime += DeltaTime;
+
+            if( AccumulatedTime > TimeBetweenSendsInSeconds )
+            {
+                SendLogEvents();
+                PendingLogEvents.Empty();
+                AccumulatedTime = 0.f;
+            }
+        }
+    private:
+        struct LogEvent
+        {
+            LogEvent( ELogVerbosity::Type InVerbosity, const FString& InMessage )
+                : Time( FDateTime::UtcNow().ToUnixTimestamp() )
+                , Message( InMessage )
+                , Verbosity( VerbosityToString(InVerbosity) )
+                , Category( TEXT("All"))
+            {}
+            
+            int64 Time; 
+            FString Message;
+            FString Verbosity;
+            FString Category;
+        };
+
+        void SendLogEvents()
+        {
+            TSharedRef<FJsonObject> ResultJsonObject = MakeShareable(new FJsonObject);
+
+            ResultJsonObject->SetStringField("appId", Id::Get().ToString() );
+            ResultJsonObject->SetStringField("product", PluginInformation::PluginName());
+            ResultJsonObject->SetStringField("versionFriendly", PluginInformation::Version::Friendly());
+            ResultJsonObject->SetStringField("versionSHA", PluginInformation::Version::SHA());
+            ResultJsonObject->SetStringField("unrealVersion", FEngineVersion::Current().ToString());
+
+            TArray< TSharedPtr<FJsonValue> > EventsJson;
+            for (const auto& Event : PendingLogEvents)
+            {
+                TSharedPtr<FJsonObject> Data = MakeShareable(new FJsonObject);
+                Data->SetNumberField(TEXT("timestamp"), (double)Event.Time);
+                Data->SetStringField(TEXT("category"), Event.Category);
+                Data->SetStringField(TEXT("verbosity"), Event.Verbosity);
+                Data->SetStringField(TEXT("message"), Event.Message);
+                EventsJson.Add(MakeShareable(new FJsonValueObject(Data)));
+            }
+
+            ResultJsonObject->SetArrayField("events", EventsJson);
+
+            FString ResultJsonObjString;
+            TSharedRef< TJsonWriter<> > Writer = TJsonWriterFactory<>::Create(&ResultJsonObjString);
+            FJsonSerializer::Serialize(ResultJsonObject, Writer);
+
+            auto Request = FHttpModule::Get().CreateRequest();
+            Request->SetURL(TEXT("https://logs.guganana.com"));
+            Request->SetVerb("POST");
+            Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+            Request->SetContentAsString(ResultJsonObjString);
+            Request->ProcessRequest();            
+        }
+
+        static FString VerbosityToString(ELogVerbosity::Type Verbosity)
+        {
+            switch (Verbosity)
+            {
+            case ELogVerbosity::Type::Error:
+                return TEXT("Error");
+            case ELogVerbosity::Type::Warning:
+                return TEXT("Warning");
+            case ELogVerbosity::Type::Log:
+                return TEXT("Log");
+            }
+            return TEXT("None");
+        }
+
+        TArray<LogEvent> PendingLogEvents;
+        float TimeBetweenSendsInSeconds;
+        float AccumulatedTime;         
+    };
+
+}
+
+class UnlogRemoteSink : public UnlogSinkBase
+{
+    virtual void ProcessLog(const FName& Category, ELogVerbosity::Type Verbosity, const FString& Message) override
+    {
+        static Guganana::RemoteLog RemoteLogger;
+        RemoteLogger.Log(Verbosity, Message);
+    }
+};
+
+
+// graveyard
+
+//template <typename ActualType>
+//class UnloggerScopedContext
+//{
+//private:
+//    FName Name;
+//    bool Value;
+//public:
+//    UnloggerScopedContext(bool InValue)
+//        , Value(InValue)
+//    {
+//        if (Value)
+//        {
+//            uint16& Count = Unlogger::Get().GetContexts().FindOrAdd(Name, 0);
+//            Count++;
+//        }
+//    }
+//
+//    ~UnloggerScopedContext()
+//    {
+//        if (Value)
+//        {
+//            auto& Contexts = Unlogger::Get().GetContexts();
+//            uint16& Count = Contexts.FindChecked(Name);
+//            check(Count > 0);
+//            Count--;
+//
+//            if (Count == 0)
+//            {
+//                Contexts.Remove(Name);
+//            }
+//        }
+//    }
+//};
