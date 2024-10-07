@@ -11,6 +11,8 @@
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 
+#include "Components/DecalComponent.h"
+
 AGameplayAbilityTargetActor_AoE::AGameplayAbilityTargetActor_AoE(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -18,6 +20,15 @@ AGameplayAbilityTargetActor_AoE::AGameplayAbilityTargetActor_AoE(const FObjectIn
 	PrimaryActorTick.TickGroup = TG_PrePhysics;
 	ShouldProduceTargetDataOnServer = true;
 	bDebug = true;
+
+	RootComponent = CreateDefaultSubobject<USceneComponent>("SceneRoot");
+
+	DecalComponent = CreateDefaultSubobject<UDecalComponent>("Decal");
+	DecalComponent->SetupAttachment(RootComponent);
+	
+
+	// I have no fucking clue why but when I rotate Y it rotates on the Z axis. Z -> X and X -> Y
+	DecalComponent->SetRelativeRotation(FRotator(90.f, 0.f, 0.f));
 }
 
 TArray<TWeakObjectPtr<AActor>> AGameplayAbilityTargetActor_AoE::PerformOverlap()
@@ -29,8 +40,10 @@ TArray<TWeakObjectPtr<AActor>> AGameplayAbilityTargetActor_AoE::PerformOverlap()
 
 	TArray<FOverlapResult> Overlaps;
 
-	const FVector Origin = StartLocation.GetTargetingTransform().GetLocation();
-	const FCollisionShape Bounds = FCollisionShape::MakeBox(BoxExtents * 0.5f);
+
+	const FTransform TargetingTransform = StartLocation.GetTargetingTransform();
+	const FVector Origin = TargetingTransform.GetLocation();
+	const FCollisionShape Bounds = FCollisionShape::MakeBox(TargetingTransform.GetRotation().RotateVector(BoxExtents * 0.5f));
 
 	GetWorld()->OverlapMultiByObjectType(Overlaps, Origin, FQuat::Identity, FCollisionObjectQueryParams(ECC_GameTraceChannel1), Bounds, Params);
 

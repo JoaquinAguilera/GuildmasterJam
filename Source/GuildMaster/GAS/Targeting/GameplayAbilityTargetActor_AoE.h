@@ -6,6 +6,9 @@
 #include "Abilities/GameplayAbilityTargetActor.h"
 #include "GameplayAbilityTargetActor_AoE.generated.h"
 
+class USceneComponent;
+class UDecalComponent;
+
 /**
  * Base class for creating shaped targeting actors in a 2D space. Currently not set up for Multiplayer
  */
@@ -36,6 +39,10 @@ protected:
 	FGameplayAbilityTargetDataHandle MakeTargetData(const TArray<TWeakObjectPtr<AActor>>& Actors) const;
 
 
+	/// <summary>
+	/// Debug Function to visualize the shaping function. Draws a grid of points to show which points are considered overlapping
+	/// </summary>
+	/// <param name="Resolution">The amount of points to draw in the grid. The total amount of points is Resolution x Resolution.</param>
 	UFUNCTION(BlueprintCallable)
 	void DebugDrawShape(int Resolution = 50) 
 	{
@@ -43,7 +50,7 @@ protected:
 
 		const FVector Origin = StartLocation.GetTargetingTransform().GetLocation();
 
-		FVector StartingPoint = Origin - FVector(BoxExtents.X * 0.5f, BoxExtents.Z * 0.5f, 0.0);
+		FVector StartingPoint = Origin - FVector(BoxExtents.X * 0.5f, BoxExtents.Y * 0.5f, 0.0);
 
 		constexpr bool bPersistent = false;
 		constexpr float LifeTime = 2.0f;
@@ -58,4 +65,12 @@ protected:
 			}
 		}
 	}
+
+private:
+
+	UPROPERTY(Category="Targeting", VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<USceneComponent> Root;
+
+	UPROPERTY(Category="Targeting", VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UDecalComponent> DecalComponent;
 };
